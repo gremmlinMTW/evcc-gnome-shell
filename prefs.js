@@ -29,6 +29,24 @@ function flattenValues(value, prefix = '', result = []) {
     return result;
 }
 
+function displayName(id) {
+    const names = {
+        pvPower: 'Solar power',
+        pvEnergy: 'Solar energy',
+        homePower: 'Home power',
+        gridPower: 'Grid power',
+        batteryPower: 'Battery power',
+    };
+    if (names[id])
+        return names[id];
+
+    return id.replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+        .replaceAll('.', ' / ')
+        .replaceAll('_', ' ')
+        .replace(/\[(\d+)\]/g, ' $1')
+        .replace(/^./, character => character.toUpperCase());
+}
+
 function addAuthorization(message, user, password) {
     if (user || password) {
         const bytes = new TextEncoder().encode(`${user}:${password}`);
@@ -71,8 +89,28 @@ export default class EvccPreferences extends ExtensionPreferences {
         statusRow.add_suffix(connectButton);
         connectionGroup.add(statusRow);
 
+        const windowGroup = new Adw.PreferencesGroup({ title: 'Web app window' });
+        page.add(windowGroup);
+        const positionRow = new Adw.ActionRow({
+            title: 'Horizontal position',
+            subtitle: '0 = left edge, 100 = right edge',
+        });
+        const positionScale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1);
+        positionScale.set_draw_value(true);
+        positionScale.set_digits(0);
+        positionScale.set_size_request(240, -1);
+        positionScale.set_value(settings.get_int('webapp-position'));
+        positionScale.connect('value-changed', () => {
+            settings.set_int('webapp-position', Math.round(positionScale.get_value()));
+        });
+        positionRow.add_suffix(positionScale);
+        positionRow.set_activatable_widget(positionScale);
+        windowGroup.add(positionRow);
+
         const valuesGroup = new Adw.PreferencesGroup({ title: 'Values shown in the top bar' });
         page.add(valuesGroup);
+        const searchEntry = new Gtk.SearchEntry({ placeholder_text: 'Filter values' });
+        valuesGroup.add(searchEntry);
         const valuesBox = new Gtk.Box({ orientation: Gtk.Orientation.VERTICAL, spacing: 6 });
         valuesGroup.add(valuesBox);
 
@@ -86,6 +124,7 @@ export default class EvccPreferences extends ExtensionPreferences {
 
             const available = parseSetting(settings, 'evcc-available-values', []);
             const selected = new Set(parseSetting(settings, 'evcc-selected-values', []));
+            const query = searchEntry.get_text().trim().toLocaleLowerCase();
             if (available.length === 0) {
                 valuesBox.append(new Gtk.Label({
                     label: 'Connect to evcc to discover available values.',
@@ -96,7 +135,8 @@ export default class EvccPreferences extends ExtensionPreferences {
                 return;
             }
 
-            available.forEach(item => {
+            available.filter(item => !query || `${item.name} ${item.id}`.toLocaleLowerCase().includes(query))
+                .forEach(item => {
                 const check = new Gtk.CheckButton({ label: item.name, active: selected.has(item.id) });
                 check.connect('toggled', () => {
                     const selection = new Set(parseSetting(settings, 'evcc-selected-values', []));
@@ -109,6 +149,7 @@ export default class EvccPreferences extends ExtensionPreferences {
                 valuesBox.append(check);
             });
         };
+        searchEntry.connect('search-changed', renderValues);
 
         const session = new Soup.Session();
         connectButton.connect('clicked', () => {
@@ -129,7 +170,7 @@ export default class EvccPreferences extends ExtensionPreferences {
 
                         const response = JSON.parse(new TextDecoder('utf-8').decode(bytes.get_data()));
                         const values = flattenValues(response.result ?? response)
-                            .map(({ id, name }) => ({ id, name: name.replaceAll('.', ' / ') }));
+                            .map(({ id }) => ({ id, name: displayName(id) }));
                         values.sort((left, right) => left.name.localeCompare(right.name));
                         settings.set_string('evcc-available-values', JSON.stringify(values));
 

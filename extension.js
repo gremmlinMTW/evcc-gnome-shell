@@ -7,7 +7,6 @@ import Soup from 'gi://Soup';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
-import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 
 function parseSetting(settings, key, fallback) {
@@ -35,9 +34,28 @@ function flattenValues(value, prefix = '', result = []) {
     return result;
 }
 
-function formatValue(value) {
-    if (typeof value === 'number' && Number.isFinite(value))
+function formatValue(value, id) {
+    if (typeof value === 'boolean')
+        return value ? 'on' : 'off';
+
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        const key = id.split('.').at(-1);
+        if (/power$/i.test(key))
+            return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value / 1000)} kW`;
+        if (/(energy)$/i.test(key))
+            return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value)} kWh`;
+        if (/share$/i.test(key))
+            return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value * 100)}%`;
+        if (/(soc|percent|percentage)$/i.test(key))
+            return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)}%`;
+        if (/current$/i.test(key))
+            return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)} A`;
+        if (/voltage$/i.test(key))
+            return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value)} V`;
+        if (/(temperature|temp)$/i.test(key))
+            return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value)} °C`;
         return new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 }).format(value);
+    }
     return String(value);
 }
 
@@ -52,10 +70,23 @@ const EvccIndicator = GObject.registerClass({
     GTypeName: 'EvccIndicator',
 }, class EvccIndicator extends PanelMenu.Button {
     _init(extension) {
-        super._init(0.5, 'evcc');
+        super._init(0.5, 'evcc', true);
         this._extension = extension;
+        this.connect('button-press-event', (_actor, event) => {
+            if (event.get_button() !== 1)
+                return Clutter.EVENT_PROPAGATE;
+
+            this._openWebApp();
+            return Clutter.EVENT_STOP;
+        });
         this._session = new Soup.Session();
         this._labels = new Map();
+        this._webappProcess = null;
+        this._webappWindow = null;
+        this._webappWindowTitle = null;
+        this._windowCreatedId = global.display.connect('window-created', (_display, window) => {
+            this._watchWebAppWindow(window);
+        });
         this._topBox = new St.BoxLayout({ style_class: 'panel-status-menu-box' });
         this.add_child(this._topBox);
 
@@ -72,44 +103,141 @@ const EvccIndicator = GObject.registerClass({
         this._url = settings.get_string('evcc-url').replace(/\/$/, '');
         this._user = settings.get_string('evcc-user');
         this._password = settings.get_string('evcc-password');
+        this._webappPosition = settings.get_int('webapp-position');
         const selected = new Set(parseSetting(settings, 'evcc-selected-values', []));
         const available = parseSetting(settings, 'evcc-available-values', []);
 
         this._labels.clear();
         this._topBox.get_children().forEach(child => this._topBox.remove_child(child));
-        this.menu.removeAll();
 
         const logo = new St.Icon({
-            icon_name: 'network-server-symbolic',
+            icon_name: 'battery-full-charged-symbolic',
             style_class: 'system-status-icon',
         });
-        const brand = new St.Label({ text: 'evcc', y_align: Clutter.ActorAlign.CENTER });
         this._topBox.add_child(logo);
-        this._topBox.add_child(brand);
 
         available.filter(item => selected.has(item.id)).forEach(item => {
             const label = new St.Label({
-                text: `  ${item.name}: ...`,
+                text: '  ...',
                 y_align: Clutter.ActorAlign.CENTER,
             });
             this._topBox.add_child(label);
-            this._labels.set(item.id, { label, name: item.name });
+            this._labels.set(item.id, label);
         });
 
-        const openItem = new PopupMenu.PopupMenuItem('Open evcc web app');
-        openItem.connect('activate', () => {
-            try {
-                Gio.AppInfo.launch_default_for_uri(this._url, null);
-            } catch (e) {
-                logError(e, 'Could not open evcc web app');
-            }
-        });
-        this.menu.addMenuItem(openItem);
+        this._positionWebApp();
+    }
 
-        if (available.length === 0) {
-            this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-            this.menu.addMenuItem(new PopupMenu.PopupMenuItem('Connect to evcc in Preferences'));
+    _openWebApp() {
+        if (this._webappWindow) {
+            this._webappWindow.delete(global.get_current_time());
+            return;
         }
+        if (this._webappProcess)
+            return;
+
+        this._webappWindowTitle = `evcc-webapp-${GLib.uuid_string_random()}`;
+        try {
+            const helperPath = this._extension.dir.get_child('webapp.js').get_path();
+            const process = Gio.Subprocess.new(
+                ['gjs', '-m', helperPath],
+                Gio.SubprocessFlags.STDIN_PIPE
+            );
+            this._webappProcess = process;
+
+            const config = JSON.stringify({
+                url: this._url,
+                user: this._user,
+                password: this._password,
+                windowTitle: this._webappWindowTitle,
+            });
+            const stdin = process.get_stdin_pipe();
+            stdin.write_all(new TextEncoder().encode(config), null);
+            stdin.close(null);
+
+            process.wait_async(null, (subprocess, result) => {
+                try {
+                    subprocess.wait_finish(result);
+                } catch (e) {
+                    logError(e, 'Could not wait for evcc web app');
+                }
+                if (this._webappProcess === subprocess) {
+                    this._webappProcess = null;
+                    this._webappWindow = null;
+                    this._webappWindowTitle = null;
+                }
+            });
+        } catch (e) {
+            this._webappProcess = null;
+            this._webappWindowTitle = null;
+            logError(e, 'Could not launch evcc web app');
+        }
+    }
+
+    _watchWebAppWindow(window) {
+        let titleSignalId = 0;
+        const matchWindow = () => {
+            if (!this._webappWindowTitle || window.get_title() !== this._webappWindowTitle)
+                return;
+
+            this._webappWindow = window;
+            if (titleSignalId) {
+                window.disconnect(titleSignalId);
+                titleSignalId = 0;
+            }
+
+            const actor = window.get_compositor_private();
+            if (!actor)
+                return;
+
+            const positionWhenMapped = () => {
+                if (!actor.is_mapped())
+                    return;
+
+                actor.disconnect(mappedSignalId);
+                GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                    this._positionWebApp();
+                    return GLib.SOURCE_REMOVE;
+                });
+            };
+            const mappedSignalId = actor.connect('notify::mapped', positionWhenMapped);
+            positionWhenMapped();
+        };
+
+        titleSignalId = window.connect('notify::title', matchWindow);
+        window.connect('unmanaged', () => {
+            if (titleSignalId)
+                window.disconnect(titleSignalId);
+            if (this._webappWindow === window)
+                this._webappWindow = null;
+        });
+        matchWindow();
+    }
+
+    _positionWebApp() {
+        if (!this._webappWindow)
+            return;
+
+        const monitor = Main.layoutManager.primaryMonitor;
+        if (!monitor)
+            return;
+
+        const frame = this._webappWindow.get_frame_rect();
+        if (frame.width <= 0 || frame.height <= 0)
+            return;
+
+        const [, panelY] = Main.panel.get_transformed_position();
+        const [, panelHeight] = Main.panel.get_transformed_size();
+        const width = Math.min(frame.width, monitor.width);
+        const height = Math.min(frame.height, monitor.height);
+        const position = Math.max(0, Math.min(100, this._webappPosition)) / 100;
+        const x = Math.round(monitor.x + (monitor.width - width) * position);
+        const y = Math.max(
+            monitor.y,
+            Math.min(Math.round(panelY + panelHeight), monitor.y + monitor.height - height)
+        );
+
+        this._webappWindow.move_frame(false, x, y);
     }
 
     _refresh() {
@@ -130,12 +258,14 @@ const EvccIndicator = GObject.registerClass({
 
                     const data = JSON.parse(new TextDecoder('utf-8').decode(bytes.get_data()));
                     const values = new Map(flattenValues(data.result ?? data).map(item => [item.id, item.value]));
-                    this._labels.forEach((info, id) => {
+                    this._labels.forEach((label, id) => {
                         if (values.has(id))
-                            info.label.set_text(`  ${info.name}: ${formatValue(values.get(id))}`);
+                            label.set_text(`  ${formatValue(values.get(id), id)}`);
+                        else
+                            label.set_text('  unavailable');
                     });
                 } catch (e) {
-                    this._labels.forEach(info => info.label.set_text(`  ${info.name}: unavailable`));
+                    this._labels.forEach(label => label.set_text('  unavailable'));
                     logError(e, 'Could not refresh evcc state');
                 }
             });
@@ -148,6 +278,14 @@ const EvccIndicator = GObject.registerClass({
         if (this._timeoutId) {
             GLib.Source.remove(this._timeoutId);
             this._timeoutId = null;
+        }
+        if (this._windowCreatedId) {
+            global.display.disconnect(this._windowCreatedId);
+            this._windowCreatedId = null;
+        }
+        if (this._webappProcess) {
+            this._webappProcess.force_exit();
+            this._webappProcess = null;
         }
         this._session.abort();
         super.destroy();
