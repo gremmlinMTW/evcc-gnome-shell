@@ -1,0 +1,7 @@
+{
+  "uuid": "evcc-topbar@example.com",
+  "name": "evcc Top Bar",
+  "description": "Shows selected evcc values in the top bar and opens the evcc web app.",
+  "shell-version": ["45", "46", "47", "48", "49", "50", "51"],
+  "settings-schema": "org.gnome.shell.extensions.evcctopbar"
+}

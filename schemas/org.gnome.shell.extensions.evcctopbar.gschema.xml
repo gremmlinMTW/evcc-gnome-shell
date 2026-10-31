@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.evcctopbar" path="/org/gnome/shell/extensions/evcctopbar/">
+    <key name="evcc-url" type="s">
+      <default>'http://evcc.local:7070'</default>
+    </key>
+    <key name="evcc-user" type="s">
+      <default>''</default>
+    </key>
+    <key name="evcc-password" type="s">
+      <default>''</default>
+    </key>
+    <key name="evcc-selected-values" type="s">
+      <default>'[]'</default>
+    </key>
+    <key name="evcc-available-values" type="s">
+      <default>'[]'</default>
+    </key>
+  </schema>
+</schemalist>
