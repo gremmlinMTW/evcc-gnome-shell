@@ -3,6 +3,8 @@
   "name": "evcc Top Bar",
   "description": "Shows selected evcc values in the top bar and opens the evcc web app. The web-app window requires WebKitGTK 6.0.",
   "url": "https://github.com/gremmlinMTW/evcc-gnome-shell",
+  "version": 1,
+  "version-name": "0.0.5",
   "shell-version": ["51"],
   "settings-schema": "org.gnome.shell.extensions.evcctopbar"
 }
