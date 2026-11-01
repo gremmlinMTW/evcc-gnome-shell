@@ -8,6 +8,7 @@ import Soup from 'gi://Soup';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
+import './webapp.js';
 
 function parseSetting(settings, key, fallback) {
     try {
@@ -98,6 +99,7 @@ const EvccIndicator = GObject.registerClass({
         this._webappProcess = null;
         this._webappWindow = null;
         this._webappWindowTitle = null;
+        this._webappWindowSignals = new Map();
         this._windowCreatedId = global.display.connect('window-created', (_display, window) => {
             this._watchWebAppWindow(window);
         });
@@ -153,7 +155,7 @@ const EvccIndicator = GObject.registerClass({
         try {
             const helperPath = this._extension.dir.get_child('webapp.js').get_path();
             const process = Gio.Subprocess.new(
-                ['gjs', '-m', helperPath],
+                ['gjs', '-m', helperPath, '--run'],
                 Gio.SubprocessFlags.STDIN_PIPE
             );
             this._webappProcess = process;
@@ -188,15 +190,15 @@ const EvccIndicator = GObject.registerClass({
     }
 
     _watchWebAppWindow(window) {
-        let titleSignalId = 0;
+        const signals = { title: 0, unmanaged: 0 };
         const matchWindow = () => {
             if (!this._webappWindowTitle || window.get_title() !== this._webappWindowTitle)
                 return;
 
             this._webappWindow = window;
-            if (titleSignalId) {
-                window.disconnect(titleSignalId);
-                titleSignalId = 0;
+            if (signals.title) {
+                window.disconnect(signals.title);
+                signals.title = 0;
             }
 
             const actor = window.get_compositor_private();
@@ -216,13 +218,17 @@ const EvccIndicator = GObject.registerClass({
             positionWhenMapped();
         };
 
-        titleSignalId = window.connect('notify::title', matchWindow);
-        window.connect('unmanaged', () => {
-            if (titleSignalId)
-                window.disconnect(titleSignalId);
+        signals.title = window.connect('notify::title', matchWindow);
+        signals.unmanaged = window.connect('unmanaged', () => {
+            if (signals.title)
+                window.disconnect(signals.title);
+            if (signals.unmanaged)
+                window.disconnect(signals.unmanaged);
+            this._webappWindowSignals.delete(window);
             if (this._webappWindow === window)
                 this._webappWindow = null;
         });
+        this._webappWindowSignals.set(window, signals);
         matchWindow();
     }
 
@@ -308,6 +314,16 @@ const EvccIndicator = GObject.registerClass({
         if (this._windowCreatedId) {
             global.display.disconnect(this._windowCreatedId);
             this._windowCreatedId = null;
+        }
+        if (this._webappWindowSignals) {
+            for (const [window, signals] of this._webappWindowSignals) {
+                if (signals.title)
+                    window.disconnect(signals.title);
+                if (signals.unmanaged)
+                    window.disconnect(signals.unmanaged);
+            }
+            this._webappWindowSignals.clear();
+            this._webappWindowSignals = null;
         }
         if (this._webappProcess) {
             this._webappProcess.force_exit();
