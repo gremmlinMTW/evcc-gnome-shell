@@ -63,12 +63,22 @@ export default class EvccPreferences extends ExtensionPreferences {
         const connectionGroup = new Adw.PreferencesGroup({ title: 'evcc connection' });
         page.add(connectionGroup);
 
+        const transportWarning = new Adw.ActionRow({
+            title: 'Unencrypted HTTP connection',
+            subtitle: 'HTTP does not encrypt traffic. Other devices on the network may read evcc data and intercept credentials. Use HTTPS when available, or connect only on a trusted network.',
+        });
+        transportWarning.add_prefix(new Gtk.Image({ icon_name: 'dialog-warning-symbolic' }));
+        const updateTransportWarning = () => {
+            transportWarning.set_visible(/^http:\/\//i.test(settings.get_string('evcc-url').trim()));
+        };
+
         const urlRow = new Adw.EntryRow({
             title: 'evcc URL',
             text: settings.get_string('evcc-url'),
         });
         urlRow.connect('changed', () => {
             settings.set_string('evcc-url', urlRow.get_text().replace(/\/$/, ''));
+            updateTransportWarning();
         });
         connectionGroup.add(urlRow);
 
@@ -84,28 +94,13 @@ export default class EvccPreferences extends ExtensionPreferences {
         passwordRow.connect('changed', () => settings.set_string('evcc-password', passwordRow.get_text()));
         connectionGroup.add(passwordRow);
 
+        connectionGroup.add(transportWarning);
+        updateTransportWarning();
+
         const statusRow = new Adw.ActionRow({ title: 'Connection' });
         const connectButton = new Gtk.Button({ label: 'Connect', valign: Gtk.Align.CENTER });
         statusRow.add_suffix(connectButton);
         connectionGroup.add(statusRow);
-
-        const windowGroup = new Adw.PreferencesGroup({ title: 'Web app window' });
-        page.add(windowGroup);
-        const positionRow = new Adw.ActionRow({
-            title: 'Horizontal position',
-            subtitle: '0 = left edge, 100 = right edge',
-        });
-        const positionScale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1);
-        positionScale.set_draw_value(true);
-        positionScale.set_digits(0);
-        positionScale.set_size_request(240, -1);
-        positionScale.set_value(settings.get_int('webapp-position'));
-        positionScale.connect('value-changed', () => {
-            settings.set_int('webapp-position', Math.round(positionScale.get_value()));
-        });
-        positionRow.add_suffix(positionScale);
-        positionRow.set_activatable_widget(positionScale);
-        windowGroup.add(positionRow);
 
         const valuesGroup = new Adw.PreferencesGroup({ title: 'Values shown in the top bar' });
         page.add(valuesGroup);

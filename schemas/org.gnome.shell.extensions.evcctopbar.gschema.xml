@@ -16,9 +16,5 @@
     <key name="evcc-available-values" type="s">
       <default>'[]'</default>
     </key>
-    <key name="webapp-position" type="i">
-      <range min="0" max="100"/>
-      <default>50</default>
-    </key>
   </schema>
 </schemalist>

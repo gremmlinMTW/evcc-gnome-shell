@@ -1,7 +1,8 @@
 {
-  "uuid": "evcc-topbar@example.com",
+  "uuid": "evcc-topbar@gremmlinmtw.github.com",
   "name": "evcc Top Bar",
-  "description": "Shows selected evcc values in the top bar and opens the evcc web app.",
-  "shell-version": ["45", "46", "47", "48", "49", "50", "51"],
+  "description": "Shows selected evcc values in the top bar and opens the evcc web app. The web-app window requires WebKitGTK 6.0.",
+  "url": "https://github.com/gremmlinMTW/evcc-gnome-shell",
+  "shell-version": ["51"],
   "settings-schema": "org.gnome.shell.extensions.evcctopbar"
 }

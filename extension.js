@@ -66,6 +66,19 @@ function addAuthorization(message, user, password) {
     }
 }
 
+function scheduleIdle(sourceIds, callback) {
+    if (!sourceIds)
+        return;
+
+    let sourceId = 0;
+    sourceId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+        sourceIds.delete(sourceId);
+        callback();
+        return GLib.SOURCE_REMOVE;
+    });
+    sourceIds.add(sourceId);
+}
+
 const EvccIndicator = GObject.registerClass({
     GTypeName: 'EvccIndicator',
 }, class EvccIndicator extends PanelMenu.Button {
@@ -81,6 +94,7 @@ const EvccIndicator = GObject.registerClass({
         });
         this._session = new Soup.Session();
         this._labels = new Map();
+        this._idleSourceIds = new Set();
         this._webappProcess = null;
         this._webappWindow = null;
         this._webappWindowTitle = null;
@@ -103,7 +117,6 @@ const EvccIndicator = GObject.registerClass({
         this._url = settings.get_string('evcc-url').replace(/\/$/, '');
         this._user = settings.get_string('evcc-user');
         this._password = settings.get_string('evcc-password');
-        this._webappPosition = settings.get_int('webapp-position');
         const selected = new Set(parseSetting(settings, 'evcc-selected-values', []));
         const available = parseSetting(settings, 'evcc-available-values', []);
 
@@ -195,9 +208,8 @@ const EvccIndicator = GObject.registerClass({
                     return;
 
                 actor.disconnect(mappedSignalId);
-                GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                scheduleIdle(this._idleSourceIds, () => {
                     this._positionWebApp();
-                    return GLib.SOURCE_REMOVE;
                 });
             };
             const mappedSignalId = actor.connect('notify::mapped', positionWhenMapped);
@@ -218,7 +230,14 @@ const EvccIndicator = GObject.registerClass({
         if (!this._webappWindow)
             return;
 
-        const monitor = Main.layoutManager.primaryMonitor;
+        const [actorX, actorY] = this.get_transformed_position();
+        const [actorWidth, actorHeight] = this.get_transformed_size();
+        const centerX = actorX + actorWidth / 2;
+        const centerY = actorY + actorHeight / 2;
+        const monitor = Main.layoutManager.monitors.find(item =>
+            centerX >= item.x && centerX < item.x + item.width &&
+            centerY >= item.y && centerY < item.y + item.height
+        ) ?? Main.layoutManager.primaryMonitor;
         if (!monitor)
             return;
 
@@ -230,8 +249,10 @@ const EvccIndicator = GObject.registerClass({
         const [, panelHeight] = Main.panel.get_transformed_size();
         const width = Math.min(frame.width, monitor.width);
         const height = Math.min(frame.height, monitor.height);
-        const position = Math.max(0, Math.min(100, this._webappPosition)) / 100;
-        const x = Math.round(monitor.x + (monitor.width - width) * position);
+        const x = Math.max(
+            monitor.x,
+            Math.min(Math.round(centerX - width / 2), monitor.x + monitor.width - width)
+        );
         const y = Math.max(
             monitor.y,
             Math.min(Math.round(panelY + panelHeight), monitor.y + monitor.height - height)
@@ -279,6 +300,11 @@ const EvccIndicator = GObject.registerClass({
             GLib.Source.remove(this._timeoutId);
             this._timeoutId = null;
         }
+        if (this._idleSourceIds) {
+            for (const sourceId of this._idleSourceIds)
+                GLib.Source.remove(sourceId);
+            this._idleSourceIds = null;
+        }
         if (this._windowCreatedId) {
             global.display.disconnect(this._windowCreatedId);
             this._windowCreatedId = null;
@@ -295,15 +321,15 @@ const EvccIndicator = GObject.registerClass({
 export default class EvccExtension extends Extension {
     enable() {
         this._settings = this.getSettings();
+        this._settingsIdleSourceIds = new Set();
         this._indicator = new EvccIndicator(this);
         Main.panel.addToStatusArea(this.uuid, this._indicator);
         this._settingsId = this._settings.connect('changed', () => {
-            GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+            scheduleIdle(this._settingsIdleSourceIds, () => {
                 if (this._indicator) {
                     this._indicator._rebuild();
                     this._indicator._refresh();
                 }
-                return GLib.SOURCE_REMOVE;
             });
         });
     }
@@ -311,6 +337,11 @@ export default class EvccExtension extends Extension {
     disable() {
         if (this._settings && this._settingsId)
             this._settings.disconnect(this._settingsId);
+        if (this._settingsIdleSourceIds) {
+            for (const sourceId of this._settingsIdleSourceIds)
+                GLib.Source.remove(sourceId);
+            this._settingsIdleSourceIds = null;
+        }
         if (this._indicator) {
             this._indicator.destroy();
             this._indicator = null;
